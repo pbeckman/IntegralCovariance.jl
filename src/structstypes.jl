@@ -1,12 +1,15 @@
 
+AbsMatOrAdj{T} = Union{<:AbstractMatrix{T}, Adjoint{T, <:AbstractMatrix{T}}}
+
 struct IndexTree
   lvl :: Int64
   idx :: Vector{Vector{SVector{2,Int64}}}
 end
 
-struct HODLRMatrix{T} <: AbstractMatrix{T}
+mutable struct HODLRMatrix{T} <: AbstractMatrix{T}
   tree :: IndexTree
   U    :: Vector{Vector{Matrix{T}}}
+  S    :: Vector{<:Vector{<:AbsMatOrAdj{T}}}
   V    :: Vector{Vector{Matrix{T}}}
-  L    :: Vector{Matrix{T}}
+  L    :: Vector{<:AbsMatOrAdj{T}}
 end

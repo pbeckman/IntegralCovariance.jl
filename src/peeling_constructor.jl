@@ -25,11 +25,10 @@ end
 
 function HODLRMatrix(
   slv::Function, adj::Function, 
-  tree::IndexTree, k::Int64, p::Int64
+  tree::IndexTree, r::Int64
   )::HODLRMatrix{Float64}
   T = Float64
   n = tree.idx[1][1][2] # matrix dimension
-  r = k+p # off-diagonal block rank 
 
   if r > minimum(leafsizes(tree))
     throw(ArgumentError("The requested off-diagonal rank at the lowest level is greater than the block size. Please decrease the tree level or the rank."))
@@ -37,89 +36,93 @@ function HODLRMatrix(
 
   # initialize factors and leaves
   U = Vector{Vector{Matrix{T}}}(undef, tree.lvl)
+  S = Vector{Vector{AbstractMatrix{T}}}(undef, tree.lvl)
   V = Vector{Vector{Matrix{T}}}(undef, tree.lvl)
   L = Vector{Matrix{T}}(undef, length(tree.idx[end]))
+  for l=1:tree.lvl
+    U[l] = Vector{Matrix{T}}(undef, 2^l)
+    S[l] = Vector{AbstractMatrix{T}}(undef, 2^l)
+    V[l] = Vector{Matrix{T}}(undef, 2^l)
+  end
 
   # initialize HODLR matrix
-  A = HODLRMatrix(tree, U, V, L)
+  A = HODLRMatrix(tree, U, S, V, L)
 
   # initialize random matrices
-  S1 = Matrix{T}(undef, n, r)
-  S2 = Matrix{T}(undef, n, r)
+  M1 = Matrix{T}(undef, n, r)
+  M2 = Matrix{T}(undef, n, r)
 
   for l=1:tree.lvl
-    # initialize factors at this level
-    A.U[l] = Vector{Matrix{T}}(undef, 2^l)
-    A.V[l] = Vector{Matrix{T}}(undef, 2^l)
-
     # construct random matrices
     for b=1:2:2^l
       idx1 = indexiter(tree, l, b)
       n1   = length(idx1)
-      S1[idx1, :] .= randn(n1, r)
-      S2[idx1, :] .= zeros(n1, r)
+      M1[idx1, :] .= randn(n1, r)
+      M2[idx1, :] .= zeros(n1, r)
 
       idx2 = indexiter(tree, l, b+1)
       n2   = length(idx2)
-      S1[idx2, :] .= zeros(n2, r)
-      S2[idx2, :] .= randn(n2, r)
+      M1[idx2, :] .= zeros(n2, r)
+      M2[idx2, :] .= randn(n2, r)
     end
 
     # apply operator to random matrices
     # and subtract products with already compressed blocks
-    Y1 = slv(S2) - mul!(Matrix{T}(undef, size(S2)), A, S2, maxlvl=l-1)
-    Y2 = slv(S1) - mul!(Matrix{T}(undef, size(S1)), A, S1, maxlvl=l-1)
+    Y1 = slv(M2) - mul!(Matrix{T}(undef, size(M2)), A, M2, maxlvl=l-1)
+    Y2 = slv(M1) - mul!(Matrix{T}(undef, size(M1)), A, M1, maxlvl=l-1)
 
     # compute and store column space matrices
     for b=1:2:2^l
       idx1 = indexiter(tree, l, b)
       A.U[l][b]    = qr(Y1[idx1,:]).Q
-      S1[idx1, :] .= A.U[l][b]
+      M1[idx1, :] .= A.U[l][b]
 
       idx2 = indexiter(tree, l, b+1)
       A.U[l][b+1]  = qr(Y2[idx2,:]).Q
-      S2[idx2, :] .= A.U[l][b+1]
+      M2[idx2, :] .= A.U[l][b+1]
     end
 
     # apply adjoint to sample matrices
     # and subtract products with adjoints of already compressed blocks
-    Z1 = adj(S2) - mul!(Matrix{T}(undef, size(S2)), A', S2, maxlvl=l-1)
-    Z2 = adj(S1) - mul!(Matrix{T}(undef, size(S1)), A', S1, maxlvl=l-1)
+    Z1 = adj(M2) - mul!(Matrix{T}(undef, size(M2)), A', M2, maxlvl=l-1)
+    Z2 = adj(M1) - mul!(Matrix{T}(undef, size(M1)), A', M1, maxlvl=l-1)
 
     # compute and store row space matrices
     for b=1:2:2^l
       idx1 = indexiter(tree, l, b)
       F1 = qr(Z1[idx1,:])
       A.V[l][b]    = F1.Q
-      A.U[l][b+1] .= A.U[l][b+1] * F1.R'
+      A.S[l][b+1]  = UpperTriangular(F1.R)'
+      A.U[l][b+1] .= A.U[l][b+1]
 
       idx2 = indexiter(tree, l, b+1)
       F2 = qr(Z2[idx2,:])
       A.V[l][b+1]  = F2.Q
-      A.U[l][b]   .= A.U[l][b] * F2.R'
+      A.S[l][b]    = UpperTriangular(F2.R)'
+      A.U[l][b]   .= A.U[l][b]
     end
   end
 
   # initialize identity block matrix
-  S = Matrix{T}(undef, n, maximum(leafsizes(tree)))
+  M = Matrix{T}(undef, n, maximum(leafsizes(tree)))
 
   # construct identity block matrix
   # and subtract products with already compressed blocks
   for b=1:2^tree.lvl
     idx = indexiter(tree, tree.lvl, b)
     nl  = length(idx)
-    S[idx, 1:nl] .= Diagonal(ones(nl))
+    M[idx, 1:nl] .= Diagonal(ones(nl))
   end
 
   # apply operator to identity block matrix
-  Y = slv(S) - mul!(Matrix{T}(undef, size(S)), A, S, maxlvl=tree.lvl)
+  Y = slv(M) - mul!(Matrix{T}(undef, size(M)), A, M, maxlvl=tree.lvl)
 
   # extract diagonal blocks
   for b=1:2^tree.lvl
-    idx  = indexiter(tree, tree.lvl, b)
-    nl   = length(idx)
-    L[b] = Y[idx, 1:nl]
+    idx    = indexiter(tree, tree.lvl, b)
+    nl     = length(idx)
+    A.L[b] = Y[idx, 1:nl]
   end
 
-  return HODLRMatrix(tree, U, V, L)
+  return A
 end

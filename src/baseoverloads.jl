@@ -1,11 +1,17 @@
 
 function Base.adjoint(A::HODLRMatrix{T})::HODLRMatrix{T} where{T<:Number}
-  # if the leaves are still undef don't try to take their adjoints
-  if isdefined(A.L, 1)
-    return HODLRMatrix(A.tree, A.V, A.U, adjoint.(A.L))
-  else
-    return HODLRMatrix(A.tree, A.V, A.U, A.L)
-  end
+  # don't take adjoints of undef elements
+  return HODLRMatrix(
+    A.tree, 
+    A.V, 
+    Vector{Vector{AbsMatOrAdj{T}}}([
+      isassigned(Sl, 1) ? adjoint.(
+        Sl[[isodd(i) ? i+1 : i-1 for i in eachindex(Sl)]]
+        ) : Sl for Sl in A.S
+    ]), 
+    A.U, 
+    isassigned(A.L, 1) ? adjoint.(A.L) : A.L
+    )
 end
 
 function LinearAlgebra.mul!(target::Array{T}, A::HODLRMatrix{T}, src::Array{T}; maxlvl=nothing)::Array{T} where{T<:Number}
@@ -16,8 +22,8 @@ function LinearAlgebra.mul!(target::Array{T}, A::HODLRMatrix{T}, src::Array{T}; 
     for b=1:2:2^l
       idx1 = indexiter(A.tree, l, b)
       idx2 = indexiter(A.tree, l, b+1)
-      target[idx1,:] .+= A.U[l][b] * (A.V[l][b+1]' * src[idx2,:])
-      target[idx2,:] .+= A.U[l][b+1] * (A.V[l][b]' * src[idx1,:])
+      target[idx1,:] .+= A.U[l][b] * (A.S[l][b] * (A.V[l][b+1]' * src[idx2,:]))
+      target[idx2,:] .+= A.U[l][b+1] * (A.S[l][b+1] * (A.V[l][b]' * src[idx1,:]))
     end
   end
   # add product with leaves
@@ -34,27 +40,6 @@ function LinearAlgebra.:*(A::HODLRMatrix{T}, src::Array{T})::Array{T} where{T<:N
   target = Array{T}(undef, size(src))
   return mul!(target, A, src)
 end
-
-function leafsizes(n::Int64, lvl::Int64)::Vector{Int64}
-  leafszs = ones(Int64, 2^lvl)*floor(Int64, n/(2^lvl))
-  remandr = n - 2^lvl*floor(Int64, n/(2^lvl))
-  while remandr > 0
-    for i in eachindex(leafszs)
-      leafszs[i] += 1
-      remandr    -= 1
-      if remandr == 0
-        break
-      end
-    end
-  end
-  return leafszs
-end
-
-function leafsizes(tree::IndexTree)::Vector{Int64}
-  return [tree.idx[tree.lvl+1][b][2]-tree.idx[tree.lvl+1][b][1]+1 for b=1:2^tree.lvl]
-end
-
-indexiter(tree, l, b) = (tree.idx[l+1][b][1]:tree.idx[l+1][b][2])
 
 function Base.size(A::HODLRMatrix{T})::Tuple{Int64, Int64} where{T<:Number} 
   return (A.tree.idx[1][1][2], A.tree.idx[1][1][2])
@@ -80,3 +65,24 @@ function Base.Matrix(A::Union{HODLRMatrix{T}, Adjoint{T, HODLRMatrix{T}}})::Matr
   # end
   return A*Matrix(Diagonal(ones(size(A, 1))))
 end
+
+function leafsizes(n::Int64, lvl::Int64)::Vector{Int64}
+  leafszs = ones(Int64, 2^lvl)*floor(Int64, n/(2^lvl))
+  remandr = n - 2^lvl*floor(Int64, n/(2^lvl))
+  while remandr > 0
+    for i in eachindex(leafszs)
+      leafszs[i] += 1
+      remandr    -= 1
+      if remandr == 0
+        break
+      end
+    end
+  end
+  return leafszs
+end
+
+function leafsizes(tree::IndexTree)::Vector{Int64}
+  return [tree.idx[tree.lvl+1][b][2]-tree.idx[tree.lvl+1][b][1]+1 for b=1:2^tree.lvl]
+end
+
+indexiter(tree, l, b) = (tree.idx[l+1][b][1]:tree.idx[l+1][b][2])
