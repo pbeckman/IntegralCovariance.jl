@@ -1,33 +1,8 @@
 
-function IndexTree(n::Int64, lvl::Int64)::IndexTree
-  if lvl > floor(Int64, log2(n))
-    throw(ArgumentError("The requested tree level is greater than the number of points n allows. Please choose a tree level of at most log2(n) = $(floor(Int64, log2(n)))."))
-  end
-  leafszs = leafsizes(n, lvl)
-  idx = Vector{Vector{SVector{2,Int64}}}(undef, lvl+1)
-
-  idx[end] = []
-  start = 1
-  for sz in leafszs
-    push!(idx[end], SVector{2,Int64}(start, start+sz-1))
-    start += sz
-  end
-  
-  for i = lvl:-1:1
-    idx[i] = Vector{SVector{2,Int64}}([])
-    for j=1:2:length(idx[i+1])
-      push!(idx[i], (idx[i+1][j][1], idx[i+1][j+1][2]))
-    end
-  end
-  
-  return IndexTree(lvl, idx)
-end
-
 function HODLRMatrix(
   slv::Function, adj::Function, 
-  tree::IndexTree, r::Int64
-  )::HODLRMatrix{Float64}
-  T = Float64
+  tree::IndexTree, r::Int64; T=Float64
+  )::HODLRMatrix{T}
   n = tree.idx[1][1][2] # matrix dimension
 
   if r > minimum(leafsizes(tree))
@@ -90,16 +65,16 @@ function HODLRMatrix(
     # compute and store row space matrices
     for b=1:2:2^l
       idx1 = indexiter(tree, l, b)
-      F1 = qr(Z1[idx1,:])
-      A.V[l][b]    = F1.Q
-      A.S[l][b+1]  = UpperTriangular(F1.R)'
-      A.U[l][b+1] .= A.U[l][b+1]
+      U1, S1, V1t = svd(Z1[idx1,:])
+      A.V[l][b]    = U1
+      A.S[l][b+1]  = Diagonal(S1)
+      A.U[l][b+1] .= A.U[l][b+1] * V1t'
 
       idx2 = indexiter(tree, l, b+1)
-      F2 = qr(Z2[idx2,:])
-      A.V[l][b+1]  = F2.Q
-      A.S[l][b]    = UpperTriangular(F2.R)'
-      A.U[l][b]   .= A.U[l][b]
+      U2, S2, V2t = svd(Z2[idx2,:])
+      A.V[l][b+1]  = U2
+      A.S[l][b]    = Diagonal(S2)
+      A.U[l][b]   .= A.U[l][b] * V2t'
     end
   end
 
@@ -125,4 +100,45 @@ function HODLRMatrix(
   end
 
   return A
+end
+
+function SymmetricHBSMatrix(
+  slv::Function, tree::IndexTree, r::Int64; s::Int64=3r, T=Float64
+  )::SymmetricHBSMatrix{T}
+
+  n = tree.idx[1][1][2] # matrix dimension
+
+  if r > minimum(leafsizes(tree))
+    throw(ArgumentError("The requested off-diagonal rank at the lowest level is greater than the block size. Please decrease the tree level or the rank."))
+  end
+
+  # initialize factors and leaves
+  U = Vector{Vector{Matrix{T}}}(undef, tree.lvl)
+  D = Vector{Vector{AbstractMatrix{T}}}(undef, tree.lvl)
+  for l=1:tree.lvl
+    U[l] = Vector{Matrix{T}}(undef, 2^l)
+    S[l] = Vector{AbstractMatrix{T}}(undef, 2^l)
+    V[l] = Vector{Matrix{T}}(undef, 2^l)
+  end
+
+  # initialize HBS matrix
+  A = SymmetricHBSMatrix(tree, U, D)
+
+  # sample Gaussian random matrix
+  M = randn(n, s)
+  Y = slv(M)
+
+  for l=tree.lvl:-1:1
+    for b=1:2:2^l
+      idx = indexiter(tree, l, b)
+      if l == tree.lvl
+        Mt = M[idx,:]
+        Yt = Y[idx,:]
+      else
+        idx = indexiter(tree, l+1, b)
+        Mt = [U[l+1][2b-1]' * M[idx,:]; ]
+        Yt = [Y[idx,:]; ]
+      end
+    end
+  end
 end
